@@ -1,0 +1,158 @@
+AWSTemplateFormatVersion: 2010-09-09
+Transform: AWS::Serverless-2016-10-31
+Description: Create S3 Bucket w/ Okta Login page, create Okta OIDC Server, delete everything when done
+Parameters:
+
+  Environment:
+    Type: String
+    Default: dev
+  StageName:
+    Type: String
+    Default: prod
+    Description: The Lambda Function and API Gateway Stage
+
+Outputs:
+  ExampleAPIUrl:
+    Value:
+      Fn::Join:
+          - ''
+          - - 'Test w/ CURL/POSTMAN, (remember Authorization Header) '
+            - !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/api"
+Resources:
+  CloudWatchRole:
+   Type: AWS::IAM::Role
+   Properties:
+    AssumeRolePolicyDocument:
+     Version: "2012-10-17"
+     Statement:
+      - Effect: Allow
+        Principal:
+         Service:
+          - "apigateway.amazonaws.com"
+        Action: "sts:AssumeRole"
+    Path: "/"
+    ManagedPolicyArns:
+     - "arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs"
+  Account:
+   Type: AWS::ApiGateway::Account
+   Properties:
+    CloudWatchRoleArn:
+     "Fn::GetAtt":
+      - CloudWatchRole
+      - Arn
+
+  AuthorizerFunc:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: index.handler
+      Runtime: nodejs4.3
+      CodeUri: authorizer
+      MemorySize: 128
+      Timeout: 3
+      Policies:
+        - AWSLambdaBasicExecutionRole
+
+  AuthorizerFuncPerm:
+      Type: AWS::Lambda::Permission
+      DependsOn:
+        - ApiGateway
+        - AuthorizerFunc
+      Properties:
+        Action: lambda:InvokeFunction
+        FunctionName:
+          Ref: AuthorizerFunc
+        Principal: apigateway.amazonaws.com
+
+
+  ApiGateway:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: !Sub ${Environment}
+      DefinitionBody:
+        swagger: 2.0
+        info:
+          title:
+            Ref: AWS::StackName
+        securityDefinitions:
+          test-authorizer:
+            type: apiKey
+            name: Authorization
+            in: header
+            x-amazon-apigateway-authtype: custom
+            x-amazon-apigateway-authorizer:
+              type: token
+              authorizerUri:
+                Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AuthorizerFunc.Arn}/invocations
+              authorizerResultTtlInSeconds: 5
+        paths:
+          /api:
+            get:
+              x-amazon-apigateway-integration:
+                httpMethod: POST
+                type: aws_proxy
+                uri:
+                  !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SimpleLambda.Arn}/invocations
+              responses: {}
+              security:
+                - test-authorizer: []
+            options:
+              tags:
+              - "CORS"
+              summary: "CORS support"
+              description: "Enable CORS by returning correct headers\n"
+              consumes:
+              - "application/json"
+              produces:
+              - "application/json"
+              parameters: []
+              responses:
+                "200":
+                  description: "Default response for CORS method"
+                  headers:
+                    Access-Control-Allow-Headers:
+                      type: "string"
+                    Access-Control-Allow-Methods:
+                      type: "string"
+                    Access-Control-Allow-Origin:
+                      type: "string"
+              x-amazon-apigateway-integration:
+                type: "mock"
+                requestTemplates:
+                  application/json: "{\n  \"statusCode\" : 200\n}\n"
+                responses:
+                  default:
+                    statusCode: "200"
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Headers: "'X-Amz-Date,Authorization,X-Api-Key'"
+                      method.response.header.Access-Control-Allow-Methods: "'*'"
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                    responseTemplates:
+                      application/json: "{}\n"
+
+
+  SimpleLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: index.handler
+      Runtime: nodejs4.3
+      CodeUri: simplelambda
+      MemorySize: 128
+      Timeout: 3
+      Policies:
+        - AWSLambdaBasicExecutionRole
+      Events:
+        MyEndpoint:
+          Type: Api
+          Properties:
+            Path: /api
+            Method: GET
+            RestApiId:
+              Ref: ApiGateway
+
+
+
+
+
+
+
+
